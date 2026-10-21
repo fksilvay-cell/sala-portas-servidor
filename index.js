@@ -48,14 +48,24 @@ function leaveRoom(ws) {
 }
 
 wss.on('connection', ws => {
+  // Player com tudo que seu jogo precisa sincronizar
   ws.player = {
     id: Math.random().toString(36).slice(2, 11),
-    x: 0, y: 0, z: 5, ry: 0
+    x: 0,
+    y: 0,
+    z: 5,
+    ry: 0,
+    anim: 'idle',      // idle | walk | run | flash
+    hasFlash: false,   // tem lanterna na mão?
+    flashOn: false     // lanterna ligada?
   };
+
   send(ws, { type: 'connected', id: ws.player.id });
+
   ws.on('message', raw => {
     let data;
     try { data = JSON.parse(raw.toString()); } catch { return; }
+
     if (data.type === 'create_room') {
       leaveRoom(ws);
       const code = makeCode();
@@ -65,6 +75,7 @@ wss.on('connection', ws => {
       send(ws, { type: 'room_created', code, id: ws.player.id, players: [] });
       return;
     }
+
     if (data.type === 'join_room') {
       const code = String(data.code || '').trim().toUpperCase();
       const room = rooms.get(code);
@@ -73,23 +84,51 @@ wss.on('connection', ws => {
       leaveRoom(ws);
       room.players.add(ws);
       ws.roomCode = code;
-      const players = [...room.players].filter(client => client !== ws).map(client => client.player);
+      const players = [...room.players].filter(c => c !== ws).map(c => c.player);
       send(ws, { type: 'room_joined', code, id: ws.player.id, players });
       broadcast(room, { type: 'player_joined', player: ws.player }, ws);
       return;
     }
+
     if (data.type === 'move') {
       if (!ws.roomCode) return;
       const room = rooms.get(ws.roomCode);
       if (!room || !room.players.has(ws)) return;
-      for (const key of ['x', 'y', 'z', 'ry']) {
-        if (Number.isFinite(Number(data[key]))) {
-          ws.player[key] = Math.max(-1000, Math.min(1000, Number(data[key])));
+
+      // Posição e rotação
+      for (const k of ['x', 'y', 'z', 'ry']) {
+        if (Number.isFinite(Number(data[k]))) {
+          ws.player[k] = Math.max(-1000, Math.min(1000, Number(data[k])));
         }
       }
+
+      // Animação - só aceita valores válidos
+      if (typeof data.anim === 'string') {
+        const valid = ['idle', 'walk', 'run', 'flash', 'walk_flash', 'run_flash'];
+        const anim = data.anim.toLowerCase().slice(0, 20);
+        if (valid.includes(anim) || anim.startsWith('idle') || anim.startsWith('walk') || anim.startsWith('run')) {
+          ws.player.anim = anim;
+        }
+      }
+
+      // Lanterna
+      if (typeof data.hasFlash !== 'undefined') ws.player.hasFlash = !!data.hasFlash;
+      if (typeof data.flashOn !== 'undefined') ws.player.flashOn = !!data.flashOn;
+
+      // Manda pra todo mundo da sala, menos pra você
+      broadcast(room, { type: 'player_moved', player: ws.player }, ws);
+    }
+
+    if (data.type === 'flash_toggle') {
+      if (!ws.roomCode) return;
+      const room = rooms.get(ws.roomCode);
+      if (!room) return;
+      ws.player.flashOn = !!data.on;
+      ws.player.hasFlash = true;
       broadcast(room, { type: 'player_moved', player: ws.player }, ws);
     }
   });
+
   ws.on('close', () => leaveRoom(ws));
   ws.on('error', () => leaveRoom(ws));
 });
